@@ -13,8 +13,15 @@ type Opcode = TokenType
 type GVariable struct {
 	name string
 	val  string
-	typ  int
+	typ  VarType
 }
+
+type VarType int
+
+const (
+	CONSTANT VarType = iota
+	VARIABLE
+)
 
 // GStatement is a single statement
 type GStatement struct {
@@ -49,6 +56,15 @@ type Parser struct {
 	cur    int // current cursor (not yet read)
 }
 
+func ParseProgram(input string) GProgram {
+	lexer := Lex(input)
+	parser := &Parser{
+		tokens: lexer.drain(),
+		cur:    0,
+	}
+	return parser.parse_program()
+}
+
 func (p *Parser) next() (Token, bool) {
 	if p.cur >= len(p.tokens) {
 		return Token{EOF, "", 0, 0}, false
@@ -58,6 +74,7 @@ func (p *Parser) next() (Token, bool) {
 	return tok, true
 }
 
+// peek peek the ith item
 func (p *Parser) peek(i int) (Token, bool) {
 	if p.cur+i >= len(p.tokens) {
 		return Token{EOF, "", 0, 0}, false
@@ -68,40 +85,40 @@ func (p *Parser) peek(i int) (Token, bool) {
 func (p *Parser) expect(expected []TokenType) Token {
 	next, ok := p.next()
 	if !ok {
-		fmt.Fprintf(os.Stderr, "No more tokens")
-		// TODO: throw, exit
+		panic("No more token")
 	}
 	for _, ele := range expected {
 		if next.typ == ele {
 			return next
 		}
 	}
-	fmt.Fprintf(os.Stderr, "Unexpected %s at %d:%d", next.val, next.pos, next.line)
-	return next
+	panic(fmt.Sprintf("Unexpected %s", next.String()))
 }
 
 func (p *Parser) parse_program() GProgram {
 	var program GProgram
-	for next, ok := p.peek(1); ok && next.typ == FUNCTION; next, ok = p.peek(1) {
+	for next, ok := p.peek(0); ok && next.typ == FUNCTION; next, ok = p.peek(0) {
 		program.functions = append(program.functions, p.parse_function())
 	}
 	// sanity check, token is exhausted
-	if _, ok := p.peek(1); ok {
+	if next, ok := p.peek(0); ok {
 		// throw error
+		fmt.Fprintf(os.Stderr, "Program is not exhausted! Got %s", next.String())
 	}
 	return program
 }
 
-// parse_list parses a list of args of type 'arg_types', closed by 'start' and 'end'
+// parse_list parses a list of args of type 'arg_types', enclosed by 'start' and 'end'
 // seperated by comma
 func (p *Parser) parse_list(start, end TokenType, arg_types []TokenType) []string {
 	p.expect([]TokenType{start})
 	var argument_list []string
-	for peek_next, ok := p.peek(1); ok && peek_next.typ != end; {
+	for peek_next, ok := p.peek(0); ok && peek_next.typ != end; peek_next, ok = p.peek(0) {
 		next := p.expect(arg_types)
 		argument_list = append(argument_list, next.val)
-		p.expect([]TokenType{COMMA})
-		peek_next, ok = p.peek(1)
+		if peek_next, ok = p.peek(0); ok && peek_next.typ != end {
+			p.expect([]TokenType{COMMA})
+		}
 	}
 	p.expect([]TokenType{end})
 	return argument_list
@@ -114,16 +131,19 @@ func (p *Parser) parse_function() GFunction {
 	function_name := p.expect([]TokenType{IDENT, HEX_NUM})
 	if function_name.typ == IDENT { // public function
 		function.args = p.parse_list(LEFT_PAREN, RIGHT_PAREN,
-			[]TokenType{ADDRESS, UINT256, BOOL, BYTE})
-		p.expect([]TokenType{LEFT_PAREN})
-		p.expect([]TokenType{RIGHT_PAREN})
-		p.expect([]TokenType{PUBLIC})
+			[]TokenType{ADDRESS, UINT256, BOOL, BYTES})
+        // TODO: TAC have this "optional" empty parenthesis
+        if peek_next, ok := p.peek(0); ok && peek_next.typ == LEFT_PAREN {
+            p.expect([]TokenType{LEFT_PAREN})
+            p.expect([]TokenType{RIGHT_PAREN})
+        }
+        p.expect([]TokenType{PUBLIC})
 	} else { // Hex name, private function
-		function.args = p.parse_list(LEFT_PAREN, RIGHT_PAREN, []TokenType{HEX_NUM})
+		function.args = p.parse_list(LEFT_PAREN, RIGHT_PAREN, []TokenType{IDENT})
 		p.expect([]TokenType{PRIVATE})
 	}
 	p.expect([]TokenType{LEFT_BRAC})
-	for next, _ := p.peek(1); next.typ != RIGHT_BRAC; next, _ = p.peek(1) {
+	for next, _ := p.peek(0); next.typ != RIGHT_BRAC; next, _ = p.peek(0) {
 		function.blocks = append(function.blocks, p.parse_block())
 	}
 	p.expect([]TokenType{RIGHT_BRAC})
@@ -134,7 +154,7 @@ func (p *Parser) parse_block() GBlock {
 	var block GBlock
 	p.expect([]TokenType{BEGIN})
 	p.expect([]TokenType{BLOCK})
-	block.address = p.expect([]TokenType{HEX_NUM}).val
+	block.address = p.expect([]TokenType{HEX_NUM, IDENT}).val
 
 	// prev=[..] ,
 	p.expect([]TokenType{PREV})
@@ -147,7 +167,7 @@ func (p *Parser) parse_block() GBlock {
 	p.expect([]TokenType{ASSIGN})
 	block.successor = p.parse_list(LEFT_SQUARE_BRAC, RIGHT_SQUARE_BRAC, []TokenType{HEX_NUM, IDENT})
 
-	for next, _ := p.peek(1); next.typ != BEGIN; next, _ = p.peek(1) {
+	for next, _ := p.peek(0); next.typ != BEGIN && next.typ != RIGHT_BRAC; next, _ = p.peek(0) {
 		block.statements = append(block.statements, p.parse_statement())
 	}
 	return block
@@ -159,33 +179,26 @@ func (p *Parser) parse_statement() GStatement {
 	statement.address = p.expect([]TokenType{IDENT, HEX_NUM}).val
 	p.expect([]TokenType{SEMI_COLON})
 
-	next, _ := p.peek(1)
+	next, _ := p.peek(0)
+	var num_args int
 	if next.typ == IDENT {
 		statement.args = append(statement.args, p.parse_variable())
 		p.expect([]TokenType{ASSIGN})
-		var num_args int
 		statement.operation, num_args = p.parse_operation()
-		for i := 0; i < num_args; i++ {
-			if i < num_args-1 {
-				p.expect([]TokenType{COMMA})
-			}
-		}
-
 		if statement.operation == PHI {
-			// phi needs special treatment, variable length arguments
-			for tk, ok := p.peek(2); ok && tk.typ == COMMA; {
-				statement.args = append(statement.args, p.parse_variable())
-				p.expect([]TokenType{COMMA})
-			}
-			// parse the last arg
-			statement.args = append(statement.args, p.parse_variable())
+			// TODO: parse mapping
 		}
 	} else {
-		var num_args int
 		statement.operation, num_args = p.parse_operation()
-		for i := 0; i < num_args; i++ {
-			if i < num_args-1 {
+	}
+	if num_args != 0 {
+		statement.args = append(statement.args, p.parse_variable())
+		for {
+			if peek_next, ok := p.peek(0); ok && peek_next.typ == COMMA {
 				p.expect([]TokenType{COMMA})
+				statement.args = append(statement.args, p.parse_variable())
+			} else {
+				break
 			}
 		}
 	}
@@ -196,7 +209,7 @@ func (p *Parser) parse_variable() GVariable {
 	var variable GVariable
 	variable.name = p.expect([]TokenType{IDENT}).val
 
-	if next, _ := p.peek(1); next.typ == LEFT_PAREN { // a constant variable
+	if next, _ := p.peek(0); next.typ == LEFT_PAREN { // a constant variable
 		p.expect([]TokenType{LEFT_PAREN})
 		variable.val = p.expect([]TokenType{HEX_NUM}).val
 		p.expect([]TokenType{RIGHT_PAREN})
@@ -208,20 +221,13 @@ func (p *Parser) parse_variable() GVariable {
 	return variable
 }
 
-func num_of_args(tok Token) int {
-	if tok.typ >= CONST && tok.typ <= GAS {
-		// nullary
-		return 0
-	} else if tok.typ <= NOT {
-		return 1
-	} else if tok.typ <= LOG0 {
-		return 2
-	} else {
-		return -1
-	}
-}
-
 func (p *Parser) parse_operation() (Opcode, int) {
 	tok, _ := p.next()
-	return tok.typ, num_of_args(tok)
+    if (tok.typ < CONST) {
+        panic(fmt.Sprintf("Unkown operation %s", tok.String()))
+    }
+	if tok.typ >= CONST && tok.typ <= GAS {
+	    return tok.typ, 0
+    }
+	return tok.typ, -1
 }

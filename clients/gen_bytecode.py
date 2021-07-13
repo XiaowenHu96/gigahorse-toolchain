@@ -42,7 +42,7 @@ def pretty_print_block(block: Block, visited: Set[str], out: TextIO):
     succ = [s.ident for s in block.successors]
 
     emit(f"prev=[{', '.join(prev)}], succ=[{', '.join(succ)}]", out, 1)
-    emit(f"=================================", out, 1)
+    # emit(f"=================================", out, 1)
 
     for stmt in block.statements:
         emit_stmt(stmt, out)
@@ -110,18 +110,20 @@ def analysis_phi_in_block(function : Function, block: Block,\
         stmt = block.statements[i]
         # only care about def statement
         if stmt.defs and stmt.op == "PHI":
-            print (block.ident)
-            emit_stmt(stmt, sys.stdout)
             # Collect variable names
             uses = {render_var(v) for v in stmt.operands}
-            phi = find_phi_mapping(function, block.predecessors, uses, dom_tree)
-            # Rewrite statement
-            block.statements[i] = Statement(
-                    stmt.ident,
-                    "PHI {{{}}}".format(', '.join([phi[k] + " -> " + k for k in phi])),
-                    stmt.operands,
-                    stmt.defs
-                ) 
+            try:
+                phi = find_phi_mapping(function, block.predecessors, uses, dom_tree)
+                # Rewrite statement
+                block.statements[i] = Statement(
+                        stmt.ident,
+                        "PHI {{{}}}".format(', '.join([phi[k] + " -> " + k for k in phi])),
+                        stmt.operands,
+                        stmt.defs
+                    ) 
+            except RuntimeError as err:
+                print(err, "in function {}".format(function.name, block.ident))
+                emit_stmt(stmt, sys.stdout)
 
 def analysis_phi(functions: Mapping[str, Function]):
     for function in functions.values():
@@ -138,28 +140,28 @@ def analysis_phi(functions: Mapping[str, Function]):
                     to_visit.add(succ)
         # constructing immediate dominators tree
         graph = [(a, b) for a in all_blocks for b in a.successors]
-        if function.ident == "0x6e8":
-            G = [(node[0].ident, node[1].ident) for node in graph]
-            nx.draw(nx.DiGraph(G), with_labels=True, node_size=500)
-            plt.savefig("g.png", format="PNG", dpi=240)
-            plt.show()
-        if not graph:
+        # if function.ident == "getTransactionCount(bool,bool)":
+        #     G = [(node[0].ident, node[1].ident) for node in graph]
+        #     nx.draw(nx.DiGraph(G), with_labels=True, node_size=500)
+        #     plt.savefig("g.png", format="PNG", dpi=240)
+        #     plt.show()
+
+        if not graph: # skip single-block function
             continue
         dom_tree = nx.immediate_dominators(nx.DiGraph(graph), function.head_block)
         del dom_tree[function.head_block]
         for block in all_blocks:
             analysis_phi_in_block(function, block, dom_tree)
-    print("Analysis done", file=sys.stderr)
 
 def main():
     global tac_variable_value
     tac_variable_value = load_csv_map('TAC_Variable_Value.csv')
 
     _, functions,  = construct_cfg()
+    analysis_phi(functions)
 
     with open('contract.tac.in', 'w') as f:
         pretty_print_tac(functions, f)
-    analysis_phi(functions)
     
 
 

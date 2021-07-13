@@ -1,27 +1,41 @@
 package lexer
 
 import (
-	"fmt"
+	// "fmt"
 	"io/ioutil"
 	"testing"
 )
 
-func TestLexerMinimum(t *testing.T) {
+var token_result Token
+
+func TestLexer_0(t *testing.T) {
 	lexer := Lex("function __function_selector__() public {}")
-	for x := range lexer.tokens {
-		fmt.Printf("%s\n", x.String())
+    for x := range lexer.tokens {
+		token_result = x
+	}
+	return
+}
+
+func TestLexerOneFunction(t *testing.T) {
+	data, err := ioutil.ReadFile("./one_function")
+	if err != nil {
+		panic(err)
+	}
+	lexer := Lex(string(data))
+    for x := range lexer.tokens {
+		token_result = x
 	}
 	return
 }
 
 func TestLexerLongRunning(t *testing.T) {
-	data, err := ioutil.ReadFile("./test")
+	data, err := ioutil.ReadFile("./long_running")
 	if err != nil {
 		panic(err)
 	}
 	lexer := Lex(string(data))
-	for x := range lexer.tokens {
-		fmt.Printf("%s\n", x.String())
+    for x := range lexer.tokens {
+		token_result = x
 	}
 	return
 }

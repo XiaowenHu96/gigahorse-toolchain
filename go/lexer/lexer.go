@@ -1,9 +1,8 @@
 package lexer
 
 /**
-* Luckily the syntax are straight forward.
-* The only conflict are "=" v.s. block cut line "=======..."
-* I'll just remove the cut line from py script and scanning requires no context anymore.
+  * TODO:
+  * 1. A toString for tokentype (just for the sake of debugging)
  */
 
 import (
@@ -16,32 +15,34 @@ import (
 type TokenType int
 
 type Token struct {
-	Typ  TokenType
-	Val  string
-	Pos  int
-	Line int
+	typ  TokenType
+	val  string
+	pos  int
+	line int
 }
 
 func (tok Token) String() string {
 	str := ""
-	switch tok.Typ {
+	switch tok.typ {
 	case IDENT:
 		str += "IDENT: "
 	case HEX_NUM:
 		str += "HEX: "
 	}
-	str = str + fmt.Sprintf("%s at %d:%d", tok.Val, tok.Line, tok.Pos)
+	str = str + fmt.Sprintf("%s at %d:%d", tok.val, tok.line, tok.pos)
 	return str
 }
 
-type stateFn func(*Lexer) stateFn
+type stateFn func(*lexer) stateFn
 
-type Lexer struct {
-	input  string     // input string
-	start  int        // start pos of current token
-	cur    int        // current pos on the line (not yet read)
-	line   int        // line scanning
-	tokens chan Token // token channel
+type lexer struct {
+	input      string     // input string
+	start      int        // start pos of current token
+	cur        int        // current pos on the input (not yet read)
+	width      int        // current pos on the line
+	prev_width int        // cache for backup
+	line       int        // line scanning
+	tokens     chan Token // token channel
 }
 
 var keywords = map[string]TokenType{
@@ -100,7 +101,6 @@ var keywords = map[string]TokenType{
 	"NUMBER":         NUMBER,
 	"DIFFICULTY":     DIFFICULTY,
 	"GASLIMIT":       GASLIMIT,
-	"POP":            POP,
 	"MLOAD":          MLOAD,
 	"MSTORE":         MSTORE,
 	"MSTORE8":        MSTORE8,
@@ -108,10 +108,8 @@ var keywords = map[string]TokenType{
 	"SSTORE":         SSTORE,
 	"JUMP":           JUMP,
 	"JUMPI":          JUMPI,
-	"PC":             PC,
 	"MSIZE":          MSIZE,
 	"GAS":            GAS,
-	"JUMPDEST":       JUMPDEST,
 	"LOG0":           LOG0,
 	"LOG1":           LOG1,
 	"LOG2":           LOG2,
@@ -128,25 +126,33 @@ var keywords = map[string]TokenType{
 	"SELFDESTRUCT":   SELFDESTRUCT,
 	"BOOL":           BOOL,
 	"UINT256":        UINT256,
+	"BYTES":          BYTES,
 	"CONST":          CONST,
+	"THROW":          THROW,
 	"PHI":            PHI,
 	"RETURNPRIVATE":  RETURNPRIVATE,
+	"CALLPRIVATE":    RETURNPRIVATE,
 }
 
 // next returns the next char in the input.
-func (l *Lexer) next() rune {
+func (l *lexer) next() rune {
 	if l.cur >= len(l.input) {
 		return EOF
 	}
 	r, _ := utf8.DecodeRuneInString(l.input[l.cur:])
 	l.cur++
+	l.prev_width = l.width
 	if r == '\n' {
 		l.line++
+		l.width = 0
+	} else {
+		l.width++
 	}
 	return r
 }
 
-func (l *Lexer) peek() rune {
+// peek returns the next char, without consuming
+func (l *lexer) peek() rune {
 	r := l.next()
 	if r != EOF {
 		l.backup()
@@ -154,34 +160,42 @@ func (l *Lexer) peek() rune {
 	return r
 }
 
-func (l *Lexer) backup() {
+func (l *lexer) backup() {
 	l.cur--
+	l.width = l.prev_width
 	if l.input[l.cur] == '\n' {
 		l.line--
 	}
 }
 
-func (l *Lexer) content() string {
+func (l *lexer) content() string {
 	return l.input[l.start:l.cur]
 }
 
+// drain scan the whole input and return an array
+// Xihu: I wanted to do a fancy channel implementation.
+// But later I found the nature of channel makes it hard to do peek action in the parser
+// As you cannot put token back into channel.. (And some kind of local caching is required)
+func (l *lexer) drain() []Token {
+	var tokens []Token
+	for x := range l.tokens {
+		tokens = append(tokens, x)
+	}
+	return tokens
+}
+
 // emit passes an item back to the client.
-func (l *Lexer) emit(t TokenType) {
-	l.tokens <- Token{t, l.input[l.start:l.cur], l.start, l.line}
+func (l *lexer) emit(t TokenType) {
+	l.tokens <- Token{t, l.input[l.start:l.cur], l.width, l.line}
 	l.start = l.cur
 }
 
-func (l *Lexer) emitIgnore() {
-	l.start = l.cur
-}
-
-// ignore skips over the pending input before this point.
-func (l *Lexer) ignore() {
+func (l *lexer) emitIgnore() {
 	l.start = l.cur
 }
 
 // accept consumes the next rune if it's from the valid set.
-func (l *Lexer) accept(valid string) bool {
+func (l *lexer) accept(valid string) bool {
 	if strings.ContainsRune(valid, l.next()) {
 		return true
 	}
@@ -190,7 +204,7 @@ func (l *Lexer) accept(valid string) bool {
 }
 
 // acceptRun consumes a run of runes from the valid set.
-func (l *Lexer) acceptRun(valid string) {
+func (l *lexer) acceptRun(valid string) {
 	for strings.ContainsRune(valid, l.next()) {
 	}
 	l.backup()
@@ -233,7 +247,7 @@ func isHex(str string) bool {
 }
 
 // scan untils meets a delimiter
-func (l *Lexer) scanUntilDelimeter() bool {
+func (l *lexer) scanUntilDelimeter() bool {
 	for l.peek() != EOF && !isDelimiter(l.peek()) {
 		l.next()
 	}
@@ -255,6 +269,15 @@ func (l *Lexer) scanUntilDelimeter() bool {
 	// emit the delimiter
 	r := l.next()
 
+	// special case, omit horizontal line
+	if r == '=' && l.peek() == '=' {
+		for l.peek() == '=' {
+			l.next()
+		}
+		l.emitIgnore()
+		return true
+	}
+
 	if tok, ok := delimiters[r]; ok {
 		l.emit(tok)
 	} else if r == EOF {
@@ -269,25 +292,9 @@ func (l *Lexer) scanUntilDelimeter() bool {
 	return true
 }
 
-// nextItem returns the next item from the input.
-func (l *Lexer) NextTokens() Token {
-	return <-l.tokens
-}
-
-// nextItem returns the next item from the input.
-func (l *Lexer) NextToken() <- chan Token {
-	return l.tokens
-}
-
-// drain drains the output so the lexing goroutine will exit.
-func (l *Lexer) Drain() {
-	for range l.tokens {
-	}
-}
-
 // lex creates a new scanner for the input string.
-func Lex(input string) *Lexer {
-	l := &Lexer{
+func Lex(input string) *lexer {
+	l := &lexer{
 		input:  input,
 		start:  0,
 		cur:    0,
@@ -298,18 +305,18 @@ func Lex(input string) *Lexer {
 	return l
 }
 
-// run runs the state machine for the Lexer.
-func (l *Lexer) run() {
+// run runs the state machine for the lexer.
+func (l *lexer) run() {
 	for l.scanUntilDelimeter() == true {
 	}
 	close(l.tokens)
 }
 
+// Enum for lexer
 const (
-	Constant TokenType = iota
-
-	/* */
-	HEX_NUM
+	/* Order Important */
+	EOF               = -1
+	HEX_NUM TokenType = iota
 	IDENT
 
 	/** Delimiters **/
@@ -323,7 +330,6 @@ const (
 	LEFT_SQUARE_BRAC
 	RIGHT_SQUARE_BRAC
 	ASSIGN
-	EOF = -1
 
 	/** misc keyword */
 	FUNCTION
@@ -333,15 +339,50 @@ const (
 	SUCC
 	BEGIN
 	BLOCK
-	CONST
 
 	/** type keywords */
 	BOOL
 	UINT256
+	BYTES
 
 	/** op keywords **/
-	PHI
+
+	/** nullary */
+	CONST
+	THROW
 	STOP
+	ADDRESS
+	ORIGIN
+	CALLER
+	CALLVALUE
+	CALLDATASIZE
+	CODESIZE
+	GASPRICE
+	RETURNDATASIZE
+	COINBASE
+	TIMESTAMP
+	NUMBER
+	DIFFICULTY
+	GASLIMIT
+	MSIZE
+	GAS
+	// CHAINID
+	// SELFBALANCE
+
+	/** unary */
+	ISZERO
+	BALANCE
+	CALLDATALOAD
+	EXTCODESIZE
+	EXTCODEHASH
+	BLOCKHASH
+	MLOAD
+	SLOAD
+	JUMP
+	SELFDESTRUCT
+	NOT
+
+	/** Binary */
 	ADD
 	MUL
 	SUB
@@ -357,63 +398,40 @@ const (
 	SLT
 	SGT
 	EQ
-	ISZERO
 	AND
 	OR
 	XOR
-	NOT
 	BYTE
 	SHL
 	SHR
 	SAR
 	SHA3
-	ADDRESS
-	BALANCE
-	ORIGIN
-	CALLER
-	CALLVALUE
-	CALLDATALOAD
-	CALLDATASIZE
-	CALLDATACOPY
-	CODESIZE
-	CODECOPY
-	GASPRICE
-	EXTCODESIZE
-	EXTCODECOPY
-	RETURNDATASIZE
-	RETURNDATACOPY
-	EXTCODEHASH
-	BLOCKHASH
-	COINBASE
-	TIMESTAMP
-	NUMBER
-	DIFFICULTY
-	GASLIMIT
-	POP
-	MLOAD
 	MSTORE
 	MSTORE8
-	SLOAD
 	SSTORE
-	JUMP
 	JUMPI
-	PC
-	MSIZE
-	GAS
-	JUMPDEST
+	REVERT
+	RETURN
 	LOG0
+
+	/** Ternary operator */
+	CALLDATACOPY
+	CODECOPY
+	RETURNDATACOPY
 	LOG1
+	CREATE
+
+	/** n-ary operator*/
+	PHI
+	EXTCODECOPY
 	LOG2
 	LOG3
 	LOG4
-	CREATE
 	CALL
 	CALLCODE
-	RETURN
 	DELEGATECALL
 	CREATE2
 	STATICCALL
-	REVERT
-	SELFDESTRUCT
+	CALLPRIVATE
 	RETURNPRIVATE
 )
