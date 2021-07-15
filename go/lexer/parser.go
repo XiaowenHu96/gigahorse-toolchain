@@ -1,6 +1,6 @@
 package gvm
 
-// Parser parse the input into a CFG-like IR.
+// Parser parse the input into a CFG-like IR, called GProgram
 // CFG IR is not directly runnable, but easy to be handled by our transformer
 
 import (
@@ -47,6 +47,15 @@ type GFunction struct {
 	name        string
 	args        []string
 	blocks      []GBlock
+}
+
+func (this *GFunction) get_block(address string) *GBlock{
+    for _, block := range(this.blocks) {
+        if (block.address == address) {
+            return &block
+        }
+    }
+    panic(fmt.Sprintf("Cannot find block %s in GFunc %s", address, this.name))
 }
 
 // GProgram
