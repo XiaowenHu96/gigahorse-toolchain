@@ -1,4 +1,6 @@
-package lexer
+package gvm
+
+// Lexer scan the input into a list of tokens.
 
 /**
   * TODO:

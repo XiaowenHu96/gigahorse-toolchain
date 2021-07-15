@@ -76,6 +76,10 @@ def find_phi_mapping(function : Function, preds: List[Block],\
     one of the predecessors' immediate_dominators
     '''
     def var_in_block(vars: Set[str], block: Block):
+        '''
+        vars: The set of variables def we are looking for
+        block: Current block we are searching
+        '''
         defs = {render_var(v) for stmt in block.statements for v in stmt.defs}
         # edge case where variable comes from the arguments
         # Add those arguments into defs
@@ -99,8 +103,13 @@ def find_phi_mapping(function : Function, preds: List[Block],\
                 mapping[v] = pred.ident
                 break
             if not cur in dom_tree: # reach root
+                # each pred should lead to one encoding
                 raise RuntimeError("Cannot find encoding {}".format(vars))
             cur = dom_tree[cur]
+    # San-check all definitions found
+    for v in vars:
+        if v not in mapping:
+            raise RuntimeError("Cannot find encoding {}".format(v))
     return mapping
 
 def analysis_phi_in_block(function : Function, block: Block,\
@@ -122,8 +131,9 @@ def analysis_phi_in_block(function : Function, block: Block,\
                         stmt.defs
                     ) 
             except RuntimeError as err:
-                print(err, "in function {}".format(function.name, block.ident))
+                print(err, "in function {}".format(function.name, block.ident), file=sys.stderr)
                 emit_stmt(stmt, sys.stdout)
+                exit(-1)
 
 def analysis_phi(functions: Mapping[str, Function]):
     for function in functions.values():

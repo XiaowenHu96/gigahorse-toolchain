@@ -1,4 +1,7 @@
-package lexer
+package gvm
+
+// Parser parse the input into a CFG-like IR.
+// CFG IR is not directly runnable, but easy to be handled by our transformer
 
 import (
 	"fmt"
@@ -36,13 +39,13 @@ type GBlock struct {
 	predecessor []string
 	successor   []string
 	statements  []GStatement
+	phi_mapping map[string]string // phi is a mapping from incoming edge to variable
 }
 
 // GFunction is a function representation
 type GFunction struct {
 	name        string
 	args        []string
-	phi_mapping map[string]string // phi is a mapping from incoming edge to variable
 	blocks      []GBlock
 }
 
