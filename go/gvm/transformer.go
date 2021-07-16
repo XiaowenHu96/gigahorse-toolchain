@@ -5,6 +5,9 @@ import (
 	"github.com/holiman/uint256"
 )
 
+// TODO possible improvement: if the statement is an assignment and gigahorse says
+// that the assignee is a constant, we can simply ignore the whole statement
+
 // Transformer encode GProgram into an executable format GVMProgram
 // Each GVMProgram contains several GVMFunctions
 // Each GVMFunctions contains a linear bytecode
@@ -31,14 +34,28 @@ type GVMFunction struct {
 	name              string
 }
 
+func newGVMFunction() GVMFunction {
+	return GVMFunction{
+		variable_encoding: make(map[string]int),
+		blocks_start:      make(map[string]int),
+		blocks_id:         make(map[string]int),
+		jumps:             make(map[int]*GStatement),
+	}
+}
+
 type GVMProgram struct {
 	entry     *GVMFunction
 	functions []GVMFunction
+
+	// debuging & auxiliary info
+	function_encoding map[string]int // map function address into an idx
+	num_funcs         int
 }
 
-type Transformer struct {
-	function_encoding map[string]int // map function into an idx
-	num_funcs         int
+func newGVMProgram() GVMProgram {
+	return GVMProgram{
+		function_encoding: make(map[string]int),
+	}
 }
 
 func (this *GVMFunction) add_var(name string) int {
@@ -58,32 +75,34 @@ func (this *GVMFunction) get_var(name string) int {
 	}
 }
 
-func (this *GVMFunction) encode_block(in *GBlock) int {
-	if id, ok := this.blocks_id[in.address]; ok {
+// never fails, if element already exists, return its idx
+func (this *GVMFunction) encode_block(in string) int {
+	if id, ok := this.blocks_id[in]; ok {
 		return id
 	}
-	this.blocks_id[in.address] = this.num_blocks
+	this.blocks_id[in] = this.num_blocks
 	this.num_blocks++
 	return this.num_blocks - 1
 }
 
-func (this *GVMFunction) decode_block(in *GBlock) int {
-	if id, ok := this.blocks_id[in.address]; !ok {
+// panic if elment cannot be found
+func (this *GVMFunction) decode_block(in string) int {
+	if id, ok := this.blocks_id[in]; !ok {
 		panic("Cannot find decode block")
 	} else {
 		return id
 	}
 }
 
+// never fails, if element already exists, return its idx
 func (this *GVMFunction) encode_var(in *GVariable) int {
 	var idx int
 	if typ := in.typ; typ == CONSTANT {
-		// add constant into constant symbol
-		idx = this.get_var(in.name)
-		if idx == -1 {
-			panic(fmt.Sprintf("Constant defined more than once %s", in.name))
+		if idx, ok := this.variable_encoding[in.name]; ok {
+			return idx
 		}
-		this.add_var(in.name)
+		// add constant into constant symbol
+		idx = this.add_var(in.name)
 		val, err := uint256.FromHex(in.val)
 		if err != nil {
 			panic(err)
@@ -96,7 +115,8 @@ func (this *GVMFunction) encode_var(in *GVariable) int {
 	return idx
 }
 
-func (this *Transformer) encode_function(name string) {
+// never fails, if element already exists, return its idx
+func (this *GVMProgram) encode_function(name string) {
 	if _, ok := this.function_encoding[name]; ok {
 		return
 	}
@@ -104,7 +124,8 @@ func (this *Transformer) encode_function(name string) {
 	this.num_funcs++
 }
 
-func (this *Transformer) decode_function(name string) int {
+// panic if elment cannot be found
+func (this *GVMProgram) decode_function(name string) int {
 	if idx, ok := this.function_encoding[name]; !ok {
 		panic(fmt.Sprintf("Error in decode_function, cannot find function %s", name))
 	} else {
@@ -112,28 +133,35 @@ func (this *Transformer) decode_function(name string) int {
 	}
 }
 
-func (this *Transformer) init_transform(in *GProgram) {
+func TransformProgram(in *GProgram) GVMProgram {
+	prog := newGVMProgram()
+
 	// Find entry function, always placed at 0
 	for _, fun := range in.functions {
 		if fun.name == "__function_selector__" {
-			this.encode_function("__function_selector__")
+			prog.encode_function(fun.blocks[0].address)
 		}
 	}
 
 	// Encode others
 	for _, fun := range in.functions {
-		this.encode_function(fun.name)
+		prog.encode_function(fun.blocks[0].address)
 	}
+
+	prog.functions = make([]GVMFunction, prog.num_funcs)
 
 	// transform each function
 	for _, fun := range in.functions {
-		this.transform_function(&fun)
+		ret := transform_function(&fun)
+		prog.functions[prog.decode_function(fun.blocks[0].address)] = ret
 	}
+
+	return prog
 }
 
 // transform_function flatten the graph layout into a linear one.
-func (this *Transformer) transform_function(in *GFunction) {
-	var function GVMFunction
+func transform_function(in *GFunction) GVMFunction {
+	function := newGVMFunction()
 	visited := make(map[*GBlock]bool)
 	to_visited := make([]*GBlock, 0)
 
@@ -141,6 +169,7 @@ func (this *Transformer) transform_function(in *GFunction) {
 	to_visited = append(to_visited, &in.blocks[0])
 	for len(to_visited) != 0 {
 		cur := to_visited[len(to_visited)-1]
+		to_visited = to_visited[:len(to_visited)-1]
 		visited[cur] = true
 		function.add_block(cur)
 		// append branched location first (So it is visited later)
@@ -148,25 +177,40 @@ func (this *Transformer) transform_function(in *GFunction) {
 		var branch_target *GBlock
 		if op := last_statment.operation; op == JUMP || op == JUMPI {
 			branch_target = in.get_block(last_statment.args[0].val)
-		}
-		if _, ok := visited[branch_target]; !ok {
-			to_visited = append(to_visited, branch_target)
-		}
-		// append fallthough location second
-		for _, succ := range cur.successor {
-			if _, ok := visited[in.get_block(succ)]; branch_target == nil || (succ != branch_target.address && !ok) {
+			if _, ok := visited[branch_target]; !ok {
 				to_visited = append(to_visited, branch_target)
 			}
 		}
+		// append fallthough location second
+		for _, succ := range cur.successor {
+			// append if not visited and target was not in jump
+			if _, ok := visited[in.get_block(succ)]; !ok && (branch_target == nil || succ != branch_target.address) {
+				to_visited = append(to_visited, in.get_block(succ))
+			}
+		}
+		//TODO? san check, if block no succ should end with RET or THROW
 	}
 
-    // TODO: Fillup jump dest
+	// Fillup jump dest
+	for i, stmt := range function.jumps {
+		// decode target address, by definition of ssa:
+		// 1. target must be a constant
+		// 2. target must be a location of a block start
+		address, ok := function.blocks_start[stmt.args[0].val]
+		if !ok {
+			panic("Cannot decode jump location")
+		}
+		// i is the location of JUMP, so i + 1 is the dest
+		function.insts[i+1] = address
+	}
+	return function
 }
 
 func (this *GVMFunction) add_block(in *GBlock) {
-	// log block start
+	// log block start location
 	this.blocks_start[in.address] = len(this.insts) - 1
-	this.encode_block(in)
+	// encode block into id
+	this.encode_block(in.address)
 
 	// find all PHI
 	var phis []*GStatement
@@ -184,22 +228,29 @@ func (this *GVMFunction) add_block(in *GBlock) {
 	}
 	this.insts = append(this.insts, GVM_PHI_END)
 
+	// BLOCK_FLAG to change the register to current block id
+	this.insts = append(this.insts, GVM_BLOCK_FLAG)
+	this.insts = append(this.insts, this.decode_block(in.address))
+
 	// translate all other statements
 	for _, stmt := range in.statements {
 		if stmt.operation != PHI {
-            transformer_dispatcher(this, &stmt)
+			transformer_dispatcher(this, &stmt)
 		}
 	}
 
-	// mark block end to update flag
-	this.insts = append(this.insts, GVM_BLOCK_END)
-	this.insts = append(this.insts, this.decode_block(in))
 }
 
 type TransFunc func(in *GVMFunction, stmt *GStatement)
 
 func trans_phi(in *GVMFunction, stmt *GStatement) {
-    // TODO
+	// PHI dest (e0 v0) (e1 v1), assign dest with value in v if incoming edge is e
+	in.insts = append(in.insts, GVM_PHI)
+	in.insts = append(in.insts, in.encode_var(&stmt.args[0])) // dest
+	for edge, v := range stmt.phi_mapping {
+		in.insts = append(in.insts, in.encode_block(edge))
+		in.insts = append(in.insts, in.encode_var(&v))
+	}
 }
 
 func trans_const(in *GVMFunction, stmt *GStatement) {
@@ -463,17 +514,17 @@ func trans_SHA3(in *GVMFunction, stmt *GStatement) {
 
 func trans_MSTORE(in *GVMFunction, stmt *GStatement) {
 	in.insts = append(in.insts, GVM_MSTORE)
-	in.push_arguments(3, stmt.args)
+	in.push_arguments(2, stmt.args)
 }
 
 func trans_MSTORE8(in *GVMFunction, stmt *GStatement) {
 	in.insts = append(in.insts, GVM_MSTORE8)
-	in.push_arguments(3, stmt.args)
+	in.push_arguments(2, stmt.args)
 }
 
 func trans_SSTORE(in *GVMFunction, stmt *GStatement) {
 	in.insts = append(in.insts, GVM_SSTORE)
-	in.push_arguments(3, stmt.args)
+	in.push_arguments(2, stmt.args)
 }
 
 func trans_JUMPI(in *GVMFunction, stmt *GStatement) {
@@ -584,12 +635,12 @@ func (this *GVMFunction) push_arguments(num_args int, vars []GVariable) {
 	}
 	// san-check
 	if i != len(vars) {
-		panic("Unmatch number of arguments")
+		panic("push_arguments: Unmatch number of arguments")
 	}
 }
 
 // TODO: this is a disaster....
-// Golang does not allow struct as constant, 
+// Golang does not allow struct as constant,
 // otherwise this can be much cleaner with a jump table defined in lexer
 // Later we can improve it with a jumptable with a map
 func transformer_dispatcher(in *GVMFunction, stmt *GStatement) {
@@ -826,10 +877,14 @@ const (
 	GVM_CREATE
 
 	/** n-ary operator*/
+	// Mark start of PHI
 	GVM_PHI_START
+	// PHI dest e v, assign dest with value in v if incoming edge is e
 	GVM_PHI
+	// Mark end of PHI
 	GVM_PHI_END
-	GVM_BLOCK_END
+	// BLOCK_END e Mark edge regsiter with value e
+	GVM_BLOCK_FLAG
 	GVM_EXTCODECOPY
 	GVM_LOG2
 	GVM_LOG3

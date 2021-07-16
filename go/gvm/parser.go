@@ -8,8 +8,6 @@ import (
 	"os"
 )
 
-type Opcode = TokenType
-
 // GVariable is either a variable or a constant
 // Xihu: Because I don't know if we need the constant information or not later for execution
 // For now I'll just keep both
@@ -29,8 +27,9 @@ const (
 // GStatement is a single statement
 type GStatement struct {
 	address   string
-	operation Opcode
+	operation TokenType
 	args      []GVariable
+	phi_mapping map[string]GVariable // phi is a mapping from incoming edge to variable
 }
 
 // GBlock is a basic control block representation
@@ -39,7 +38,6 @@ type GBlock struct {
 	predecessor []string
 	successor   []string
 	statements  []GStatement
-	phi_mapping map[string]string // phi is a mapping from incoming edge to variable
 }
 
 // GFunction is a function representation
@@ -141,6 +139,7 @@ func (p *Parser) parse_function() GFunction {
 	p.expect([]TokenType{FUNCTION})
 
 	function_name := p.expect([]TokenType{IDENT, HEX_NUM})
+    function.name = function_name.val
 	if function_name.typ == IDENT { // public function
 		function.args = p.parse_list(LEFT_PAREN, RIGHT_PAREN,
 			[]TokenType{ADDRESS, UINT256, BOOL, BYTES})
@@ -186,7 +185,9 @@ func (p *Parser) parse_block() GBlock {
 }
 
 func (p *Parser) parse_statement() GStatement {
-	var statement GStatement
+    statement := GStatement {
+        phi_mapping: make(map[string]GVariable),
+    }
 	// 0xabc :
 	statement.address = p.expect([]TokenType{IDENT, HEX_NUM}).val
 	p.expect([]TokenType{SEMI_COLON})
@@ -199,6 +200,17 @@ func (p *Parser) parse_statement() GStatement {
 		statement.operation, num_args = p.parse_operation()
 		if statement.operation == PHI {
 			// TODO: parse mapping
+            p.expect([]TokenType{LEFT_BRAC})
+            for peek_next, ok := p.peek(0); ok && peek_next.typ != RIGHT_BRAC; peek_next, ok = p.peek(0) {
+                edge := p.expect([]TokenType{HEX_NUM, IDENT})
+                p.expect([]TokenType{RIGHT_ARROW})
+                variable := p.parse_variable()
+                statement.phi_mapping[edge.val] = variable
+                if peek_next, ok = p.peek(0); ok && peek_next.typ != RIGHT_BRAC {
+                    p.expect([]TokenType{COMMA})
+                }
+            }
+            p.expect([]TokenType{RIGHT_BRAC})
 		}
 	} else {
 		statement.operation, num_args = p.parse_operation()
@@ -233,7 +245,7 @@ func (p *Parser) parse_variable() GVariable {
 	return variable
 }
 
-func (p *Parser) parse_operation() (Opcode, int) {
+func (p *Parser) parse_operation() (TokenType, int) {
 	tok, _ := p.next()
     if (tok.typ < CONST) {
         panic(fmt.Sprintf("Unkown operation %s", tok.String()))

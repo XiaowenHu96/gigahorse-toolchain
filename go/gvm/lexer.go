@@ -230,7 +230,7 @@ func isSpace(r rune) bool {
 }
 
 func isDelimiter(r rune) bool {
-	return r == '{' || r == '}' || r == '(' || r == ')' || r == ':' || r == ',' || r == '[' || r == ']' || r == '=' || isSpace(r)
+	return r == '{' || r == '}' || r == '(' || r == ')' || r == ':' || r == ',' || r == '[' || r == ']' || r == '=' || r == '-' || isSpace(r)
 }
 
 func isHex(str string) bool {
@@ -268,7 +268,7 @@ func (l *lexer) scanUntilDelimeter() bool {
 		l.emit(IDENT)
 	} /* else: empty content, omit */
 
-	// emit the delimiter
+	// scan and emit the delimiter
 	r := l.next()
 
 	// special case, omit horizontal line
@@ -279,6 +279,13 @@ func (l *lexer) scanUntilDelimeter() bool {
 		l.emitIgnore()
 		return true
 	}
+    
+    // ->
+    if r == '-' && l.peek() == '>' {
+        l.next()
+        l.emit(RIGHT_ARROW)
+        return true
+    }
 
 	if tok, ok := delimiters[r]; ok {
 		l.emit(tok)
