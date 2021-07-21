@@ -58,7 +58,7 @@ def pretty_print_block(block: Block, visited: Set[str], out: TextIO):
 def pretty_print_tac(functions: Mapping[str, Function], out: TextIO):
     for function in sorted(functions.values(), key=lambda x: x.ident):
         visibility = 'public' if function.is_public else 'private'
-        emit(f"function {function.name}({', '.join(function.formals)}) {visibility} {{", out)
+        emit(f"function {function.name}({', '.join([render_var(args) for args in function.formals])}) {visibility} {{", out)
         pretty_print_block(function.head_block, set(), out)
 
         emit("}", out)
@@ -102,7 +102,7 @@ def find_phi_mapping(function : Function, preds: List[Block],\
                     raise RuntimeError("Double encoding: {}".format(v))
                 mapping[v] = pred.ident
                 break
-            if not cur in dom_tree: # reach root
+            if not cur in dom_tree: # reached root
                 # each pred should lead to one encoding
                 raise RuntimeError("Cannot find encoding {}".format(vars))
             cur = dom_tree[cur]

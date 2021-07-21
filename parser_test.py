@@ -28,10 +28,13 @@ class Task:
         '''
         return input.stderr.decode('utf-8');
 
-    def run(self, silent=False, stdout="", stderr=""):
+    def run(self, silent=False, stdout="", stderr="", timeout=None):
 
         print(self.cmd)
-        ret = subprocess.run(self.cmd, capture_output=True, shell=True)
+        if timeout is not None:
+            ret = subprocess.run(self.cmd, capture_output=True, shell=True, timeout=timeout)
+        else:
+            ret = subprocess.run(self.cmd, capture_output=True, shell=True)
         
         if (stderr != ""):
             result = ret.stderr.decode('utf-8')
@@ -68,27 +71,23 @@ def gigahorse(inputfile):
         if c.endswith(".hex") and c not in logs:
             contract = os.path.join(contract_dir, c)
             
-            ret = Task("./generatefacts " + contract +  " facts").run(silent=True)
-            ret |= Task("bash -c \'echo \\\"8\\\" > facts/MaxContextDepth.csv\'").run(silent=True)
-            start = perf_counter()
-            ret |= Task("LD_LIBRARY_PATH=/home/xiaowen/gigahorse-toolchain/souffle-addon \
-                    ./prog  -F facts -D out").run()
-            analysis_time = perf_counter() - start
-            start = perf_counter()
-            ret |= Task("cd out && ../clients/gen_bytecode.py").run()
-            generation_time = perf_counter() - start
-            print("time spend on analysis {}, generation {}"\
-                    .format(str(analysis_time), str(generation_time)))
+            try:
+                ret = Task("./pipeline.sh " + contract).run(timeout=600)
+            except subprocess.TimeoutExpired:
+                print("Contract " + contract + " TIMEOUT")
+                f = open(inputfile, "a")
+                f.write(c + "\t" + "TIMEOUT\n")
+                f.close()
+                continue
+                
             # Update log
             f = open(inputfile, "a")
             if (ret == 0) :
-                f.write(c + "\t" + "PASSED" + "\t" + str(analysis_time) \
-                        + "\t" + str(generation_time) + "\n")
+                f.write(c + "\t" + "PASSED\n")
                 # copy program into GVM_CFG
                 Task("cp ./out/contract.tac.in ./GVM_CFG/" + c.replace("hex", "tac")).run()
             else:
-                f.write(c + "\t" + "FAILED" + "\t" + str(analysis_time) \
-                        + "\t" + str(generation_time) + "\n")
+                f.write(c + "\t" + "FAILED\n")
             f.close()
 
 
