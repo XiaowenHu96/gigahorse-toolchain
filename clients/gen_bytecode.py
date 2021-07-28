@@ -168,6 +168,9 @@ def main():
     tac_variable_value = load_csv_map('TAC_Variable_Value.csv')
 
     _, functions,  = construct_cfg()
+    with open('contract.tac', 'w') as f:
+        pretty_print_tac(functions, f)
+
     analysis_phi(functions)
 
     with open('contract.tac.in', 'w') as f:
