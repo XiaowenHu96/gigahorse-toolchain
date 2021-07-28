@@ -289,6 +289,7 @@ ByteCodeHex(substr(bytecode, 2, strlen(bytecode))):-
 
 
   .decl ThrowJump(stmt:Statement)
+  .output ThrowJump // GVM
   
   ThrowJump(jmp) :-
      ImmediateBlockJumpTarget(block, variable),
