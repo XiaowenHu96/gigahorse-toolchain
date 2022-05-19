@@ -15,6 +15,7 @@ bash -c "echo \"8\" > $facts/MaxContextDepth.csv"
 mkdir -p $out
 if [[ $# -eq 4 ]];
 then
+    echo "timeout"
     LD_LIBRARY_PATH=$souffleaddon timeout $4 $souffle  -F $facts -D $out
 else
     LD_LIBRARY_PATH=$souffleaddon $souffle  -F $facts -D $out

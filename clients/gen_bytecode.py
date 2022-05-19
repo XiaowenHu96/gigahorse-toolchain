@@ -132,8 +132,14 @@ def analysis_phi_in_block(function : Function, block: Block,\
                     ) 
             except RuntimeError as err:
                 print(err, "in function {}".format(function.name, block.ident), file=sys.stderr)
-                emit_stmt(stmt, sys.stdout)
-                exit(-1)
+                emit_stmt(stmt, sys.stderr)
+                # Try recovery
+                block.statements[i] = Statement(
+                        stmt.ident,
+                        "ILL_PHI",
+                        stmt.operands,
+                        stmt.defs
+                    ) 
 
 def analysis_phi(functions: Mapping[str, Function]):
     for function in functions.values():
